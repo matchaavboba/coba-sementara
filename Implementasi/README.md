@@ -37,9 +37,6 @@ Setelah keempatnya, bagian 10 membahas *default deny* dengan rule stateful, dan 
 - [8. Skenario 3: Water7 Menolak HTTP](#8-skenario-3-water7-menolak-http)
 - [9. Skenario 4: Mengalihkan Baratie ke Mariejois dengan DNAT](#9-skenario-4-mengalihkan-baratie-ke-mariejois-dengan-dnat)
 - [10. Default Deny dan Stateful Filtering](#10-default-deny-dan-stateful-filtering)
-- [11. Persistensi](#11-persistensi)
-- [12. Troubleshooting](#12-troubleshooting)
-- [13. Final Verification dan Reset](#13-final-verification-dan-reset)
 
 ---
 
