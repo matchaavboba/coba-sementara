@@ -8,6 +8,7 @@ Implementasi menggunakan:
 - `alpinet` untuk `Baratie`, `Mariejois`, dan `Arabasta` (PC)
 - `iptables` sebagai firewall
 - `nc` (netcat) sebagai alat uji koneksi TCP
+- `ifupdown` (dipasang lewat `apt` pada `debinet`) agar konfigurasi interface tersimpan di `/etc/network/interfaces`
 
 Implementasi ini menggantikan latihan berbasis Cisco Packet Tracer pada modul sebelumnya. Empat kebutuhan pada latihan lama dijalankan satu per satu sebagai skenario:
 
@@ -48,7 +49,6 @@ Setelah keempatnya, bagian 10 membahas *default deny* dengan rule stateful, dan 
 
 Buat topologi berikut pada GNS3.
 
-<!-- SS-01: Screenshot topologi lengkap di GNS3: NAT1, Firewall, Switch1, Baratie, Mariejois, Arabasta, Water7. Label interface pada setiap kabel (eth0 sampai eth3) harus terlihat. -->
 ![Topologi implementasi firewall](img/01-topologi-gns3.png)
 
 Gambaran logisnya:
@@ -83,12 +83,6 @@ Topologi terdiri dari:
 
 `Switch1` dibutuhkan karena LAN 1 berisi dua host. LAN 2 dan LAN 3 masing-masing hanya berisi satu host, sehingga dihubungkan langsung ke router.
 
-Node `Firewall` membutuhkan **4 network adapter** (`eth0` sampai `eth3`). Jika template `debinet` hanya memiliki satu adapter, hentikan node, klik kanan, pilih **Configure**, lalu atur jumlah adapter pada bagian jaringan sebelum node dihubungkan.
-
-<!-- UJI: pastikan menu pengaturan jumlah adapter pada node docker memang ada di Configure > Network (General settings) pada versi GNS3 yang dipakai; sesuaikan kalimat di atas. -->
-<!-- SS-02: Screenshot pengaturan jumlah network adapter pada node Firewall (Configure). -->
-![Pengaturan adapter Firewall](img/02-adapter-firewall.png)
-
 ## 1.2 Pembagian Jaringan
 
 | Jaringan | Network | Gateway | Isi |
@@ -112,14 +106,18 @@ Alamat setiap node:
 
 ## 1.3 Hubungan Interface
 
-| Node | Interface | Terhubung ke |
-|---|---|---|
-| `Firewall` | `eth0` | `NAT1` |
-| `Firewall` | `eth1` | `Switch1` |
-| `Firewall` | `eth2` | `Arabasta` `eth0` |
-| `Firewall` | `eth3` | `Water7` `eth0` |
-| `Baratie` | `eth0` | `Switch1` |
-| `Mariejois` | `eth0` | `Switch1` |
+Setiap kabel pada topologi menghubungkan dua port. Tarik kabel persis sesuai tabel berikut.
+
+| No | Dari | Port | Ke | Port |
+|---|---|---|---|---|
+| 1 | `Firewall` | `eth0` | `NAT1` | `nat0` |
+| 2 | `Firewall` | `eth1` | `Switch1` | `Ethernet0` |
+| 3 | `Switch1` | `Ethernet1` | `Baratie` | `eth0` |
+| 4 | `Switch1` | `Ethernet2` | `Mariejois` | `eth0` |
+| 5 | `Firewall` | `eth2` | `Arabasta` | `eth0` |
+| 6 | `Firewall` | `eth3` | `Water7` | `eth0` |
+
+Port pada `Switch1` bernama `Ethernet0`, `Ethernet1`, dan seterusnya (di kanvas GNS3 tampil sebagai `e0`, `e1`). Jika nama port pada GNS3 kalian berbeda, ikuti nama yang tampil.
 
 Pastikan interface pada GNS3 sesuai dengan hasil `ip -br a` pada masing-masing node. Rule iptables pada modul ini menyebut nama interface (`eth1`, `eth3`, dan seterusnya), sehingga kabel yang tertukar akan membuat rule menyasar jaringan yang salah.
 
@@ -137,11 +135,91 @@ Nyalakan node `Firewall`, buka console, lalu jalankan:
 ip -br a
 ```
 
-Pastikan terdapat `eth0`, `eth1`, `eth2`, dan `eth3`. Pada tahap ini `eth0` seharusnya sudah mendapat IP dari NAT, sedangkan `eth1` sampai `eth3` belum memiliki alamat.
+Pastikan terdapat `eth0`, `eth1`, `eth2`, dan `eth3`. Pada tahap ini `eth0` biasanya sudah mendapat IP dari NAT, sedangkan `eth1` sampai `eth3` belum memiliki alamat.
 
-## 2.2 Konfigurasi Interface
+## 2.2 Beri IP pada Interface
 
-Tulis konfigurasi interface:
+Beri alamat dan nyalakan `eth1` sampai `eth3` dalam satu perintah:
+
+```bash
+for i in 1 2 3; do ip addr add 10.50.$i.1/24 dev eth$i; ip link set eth$i up; done
+```
+
+Jika `eth0` ternyata belum memiliki IP, isi secara manual:
+
+```bash
+ip link set eth0 up; ip addr add 192.168.122.100/24 dev eth0; ip route replace default via 192.168.122.1
+```
+
+Alamat `192.168.122.x` mengikuti jaringan bawaan NAT GNS3, sama seperti pada skrip router Modul 3. Sesuaikan jika NAT kalian memakai jaringan lain.
+
+Verifikasi:
+
+```bash
+ip -br a
+ip route
+```
+
+Hasil yang diharapkan: `eth1`, `eth2`, dan `eth3` berstatus `UP` dengan alamat `10.50.1.1/24`, `10.50.2.1/24`, dan `10.50.3.1/24`. Pada `ip route` terdapat satu route default (lewat `eth0`) dan tiga route jaringan lokal.
+
+![Interface Firewall](img/02-ip-firewall.png)
+
+## 2.3 Aktifkan IP Forwarding
+
+Supaya paket dapat diteruskan antar-subnet, aktifkan forwarding:
+
+```bash
+sysctl -w net.ipv4.ip_forward=1
+```
+
+Periksa:
+
+```bash
+sysctl net.ipv4.ip_forward
+```
+
+Hasil yang diharapkan:
+
+```text
+net.ipv4.ip_forward = 1
+```
+
+## 2.4 Akses Internet, Instal Package, dan NAT
+
+Pasang DNS resolver, lalu uji koneksi router ke internet:
+
+```bash
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+ping -c 3 8.8.8.8
+```
+
+Instal package yang dibutuhkan:
+
+```bash
+apt update && apt install -y ifupdown iptables conntrack
+```
+
+Periksa versi iptables:
+
+```bash
+iptables --version
+```
+
+Keluarannya berakhiran `(nf_tables)` atau `(legacy)`. Keduanya dapat dipakai pada modul ini.
+
+![iptables terpasang](img/03-iptables-version.png)
+
+Aktifkan NAT agar host di belakang router dapat keluar ke internet:
+
+```bash
+iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+```
+
+Rule ini sama dengan yang dipakai pada Modul 1: alamat sumber paket yang keluar lewat `eth0` diganti dengan IP milik `eth0`, karena IP privat `10.50.x.x` tidak dikenal oleh jaringan di luar.
+
+## 2.5 Simpan Konfigurasi Interface
+
+Setelah `ifupdown` terpasang, tulis konfigurasi interface agar alamat tidak hilang saat node direstart:
 
 ```bash
 cat > /etc/network/interfaces <<'EOF'
@@ -168,79 +246,15 @@ iface eth3 inet static
 EOF
 ```
 
-Terapkan:
+Uji bahwa file tersebut benar. Alamat dari bagian 2.2 dihapus dulu supaya `ifup` tidak menolak karena alamat sudah ada, lalu `ifup` memasangnya kembali dari file:
 
 ```bash
-for i in 0 1 2 3; do ifdown eth$i 2>/dev/null; ifup eth$i; done
-```
-
-<!-- UJI: pastikan ifdown/ifup tersedia dan berjalan di image debinet. Jika tidak, ganti dengan ip addr add (lihat bagian 12). -->
-
-Verifikasi:
-
-```bash
+for i in 1 2 3; do ip addr flush dev eth$i; done
+mkdir -p /run/network; ifup eth1 eth2 eth3
 ip -br a
-ip route
 ```
 
-Hasil yang diharapkan: `eth1`, `eth2`, dan `eth3` berstatus `UP` dengan alamat `10.50.1.1/24`, `10.50.2.1/24`, dan `10.50.3.1/24`. Pada `ip route` terdapat satu route default (lewat `eth0`) dan tiga route jaringan lokal.
-
-<!-- SS-03: Screenshot hasil ip -br a dan ip route pada Firewall setelah konfigurasi. -->
-![Interface Firewall](img/03-ip-firewall.png)
-
-## 2.3 Aktifkan IP Forwarding
-
-Supaya paket dapat diteruskan antar-subnet, aktifkan forwarding:
-
-```bash
-sysctl -w net.ipv4.ip_forward=1
-```
-
-Periksa:
-
-```bash
-sysctl net.ipv4.ip_forward
-```
-
-Hasil yang diharapkan:
-
-```text
-net.ipv4.ip_forward = 1
-```
-
-## 2.4 Akses Internet dan NAT
-
-Pasang DNS resolver, lalu uji koneksi router ke internet:
-
-```bash
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
-ping -c 3 8.8.8.8
-```
-
-Instal package yang dibutuhkan:
-
-```bash
-apt update && apt install -y iptables conntrack
-```
-
-Periksa versi iptables:
-
-```bash
-iptables --version
-```
-
-Keluarannya berakhiran `(nf_tables)` atau `(legacy)`. Keduanya dapat dipakai pada modul ini.
-
-<!-- SS-04: Screenshot iptables --version dan ping 8.8.8.8 berhasil pada Firewall. -->
-![iptables terpasang](img/04-iptables-version.png)
-
-Aktifkan NAT agar host di belakang router dapat keluar ke internet:
-
-```bash
-iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-```
-
-Rule ini sama dengan yang dipakai pada Modul 1: alamat sumber paket yang keluar lewat `eth0` diganti dengan IP milik `eth0`, karena IP privat `10.50.x.x` tidak dikenal oleh jaringan di luar.
+Hasil yang diharapkan: `eth1`, `eth2`, dan `eth3` kembali memiliki alamat `10.50.1.1/24`, `10.50.2.1/24`, dan `10.50.3.1/24`. `eth0` tidak ikut dijalankan ulang karena sudah aktif dan sudah dipakai untuk akses internet.
 
 ---
 
@@ -268,8 +282,7 @@ ip route
 
 Hasil yang diharapkan: `eth0` memiliki alamat `10.50.1.2/24`, dan route default mengarah ke `10.50.1.1`.
 
-<!-- SS-05: Screenshot ip -br a dan ip route pada Baratie (cukup satu PC sebagai contoh). -->
-![Konfigurasi Baratie](img/05-ip-baratie.png)
+![Konfigurasi Baratie](img/04-ip-baratie.png)
 
 ## 3.2 Mariejois
 
@@ -313,7 +326,31 @@ ip route
 
 ## 3.4 Water7
 
-`Water7` adalah server yang memakai `debinet`, dan perlu memasang `iptables` serta `netcat`.
+`Water7` adalah server yang memakai `debinet`, dan perlu memasang `iptables`, `netcat`, serta `ifupdown`. Seperti pada `Firewall`, IP diberikan lebih dulu dengan perintah `ip` supaya `apt` bisa dipakai.
+
+```bash
+ip addr add 10.50.3.2/24 dev eth0; ip link set eth0 up; ip route add default via 10.50.3.1
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+ip -br a
+ip route
+ping -c 3 8.8.8.8
+```
+
+Jika `ping 8.8.8.8` berhasil, NAT pada `Firewall` berjalan. Lanjutkan dengan instalasi package:
+
+```bash
+apt update && apt install -y ifupdown iptables netcat-traditional
+```
+
+Varian `netcat-traditional` dipilih agar penulisan perintah `nc` seragam dengan yang dipakai pada materi (`nc -l -p [PORT]`). Pastikan varian tersebut aktif:
+
+```bash
+nc -h 2>&1 | head -n 1
+```
+
+![Instalasi package Water7](img/05-install-water7.png)
+
+Simpan konfigurasi interface:
 
 ```bash
 cat > /etc/network/interfaces <<'EOF'
@@ -326,29 +363,18 @@ iface eth0 inet static
     netmask 255.255.255.0
     gateway 10.50.3.1
 EOF
-ifdown eth0 2>/dev/null; ifup eth0
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
+```
+
+Uji file tersebut:
+
+```bash
+ip addr flush dev eth0
+mkdir -p /run/network; ifup eth0
 ip -br a
 ip route
-ping -c 3 8.8.8.8
 ```
 
-Jika `ping 8.8.8.8` berhasil, NAT pada `Firewall` berjalan. Lanjutkan dengan instalasi package:
-
-```bash
-apt update && apt install -y iptables netcat-traditional
-```
-
-Varian `netcat-traditional` dipilih agar penulisan perintah `nc` seragam dengan yang dipakai pada materi (`nc -l -p [PORT]`). Pastikan varian tersebut aktif:
-
-```bash
-nc -h 2>&1 | head -n 1
-```
-
-<!-- UJI: pastikan keluaran nc -h menunjukkan versi traditional (misal [v1.10-xx]). Jika yang aktif varian lain, jalankan: update-alternatives --set nc /bin/nc.traditional -->
-
-<!-- SS-06: Screenshot instalasi iptables dan netcat-traditional berhasil pada Water7, beserta keluaran nc -h. -->
-![Instalasi package Water7](img/06-install-water7.png)
+Hasil yang diharapkan: `eth0` kembali memiliki alamat `10.50.3.2/24`, dan route default mengarah ke `10.50.3.1`.
 
 > **Penting:** selesaikan instalasi package pada `Water7` **sebelum** mengerjakan bagian 10. Pada bagian itu `Water7` tidak lagi diizinkan keluar ke internet, sehingga `apt` tidak akan berfungsi.
 
@@ -380,8 +406,7 @@ Ringkasan hasil yang diharapkan:
 | `Water7` | `Baratie` (`10.50.1.2`) | Berhasil |
 | `Baratie`, `Water7` | `8.8.8.8` | Berhasil (lewat NAT) |
 
-<!-- SS-07: Screenshot ping dari Baratie ke Water7, Arabasta, dan 8.8.8.8 yang seluruhnya berhasil. -->
-![Pengujian awal](img/07-pengujian-awal.png)
+![Pengujian awal](img/06-pengujian-awal.png)
 
 Periksa kondisi iptables pada `Firewall`:
 
@@ -400,8 +425,7 @@ Hasil yang diharapkan:
 
 dan pada table `nat` hanya terdapat satu rule `MASQUERADE` pada `POSTROUTING`. Artinya, pada kondisi ini `Firewall` hanya meneruskan paket dan belum menyaring apa pun, sesuai penjelasan pada bagian 6.2 materi.
 
-<!-- SS-08: Screenshot iptables -S dan iptables -t nat -S pada Firewall (kondisi awal, policy ACCEPT, hanya MASQUERADE). -->
-![iptables kondisi awal](img/08-iptables-awal.png)
+![iptables kondisi awal](img/07-iptables-awal.png)
 
 ---
 
@@ -443,8 +467,7 @@ Kolom `pkts` pada rule bernomor 1 bertambah sesuai jumlah ping yang dikirim. Hap
 iptables -F FORWARD
 ```
 
-<!-- SS-09: Screenshot dua ping dari Baratie (ke 10.50.1.1 berhasil, ke 10.50.3.2 gagal) dan iptables -L FORWARD -n -v dengan counter bertambah. -->
-![Demo FORWARD](img/09-demo-forward.png)
+![Demo FORWARD](img/08-demo-forward.png)
 
 ## 5.2 Rule pada INPUT
 
@@ -474,8 +497,7 @@ Hapus rule:
 iptables -F INPUT
 ```
 
-<!-- SS-10: Screenshot dua ping dari Baratie setelah rule dipasang di INPUT (ke router gagal, ke Water7 berhasil). -->
-![Demo INPUT](img/10-demo-input.png)
+![Demo INPUT](img/09-demo-input.png)
 
 ## 5.3 Rule pada OUTPUT
 
@@ -510,8 +532,7 @@ Hapus rule:
 iptables -F OUTPUT
 ```
 
-<!-- SS-11: Screenshot ping dari Firewall ke Water7 (gagal) dan dari Baratie ke Water7 (berhasil) saat rule OUTPUT aktif. -->
-![Demo OUTPUT](img/11-demo-output.png)
+![Demo OUTPUT](img/10-demo-output.png)
 
 ## 5.4 Kesimpulan
 
@@ -554,8 +575,7 @@ Periksa:
 iptables -L FORWARD -n -v --line-numbers
 ```
 
-<!-- SS-12: Screenshot iptables -L FORWARD -n -v --line-numbers pada Firewall setelah rule skenario 1 dipasang (counter masih 0). -->
-![Rule skenario 1](img/12-skenario1-rule.png)
+![Rule skenario 1](img/11-skenario1-rule.png)
 
 ## 6.2 Uji
 
@@ -583,8 +603,7 @@ Hasil yang diharapkan:
 
 Hanya pasangan `Baratie` dan `Water7` yang terputus. Host lain tidak terpengaruh, begitu pula tujuan lain milik `Baratie`.
 
-<!-- SS-13: Screenshot ping dari Baratie ke Water7 (gagal) dan dari Mariejois ke Water7 (berhasil). -->
-![Uji skenario 1](img/13-skenario1-uji.png)
+![Uji skenario 1](img/12-skenario1-uji.png)
 
 ## 6.3 Perhatikan Counter
 
@@ -637,8 +656,7 @@ date -u
 
 Catat jam UTC yang tampil. Pada contoh di bawah, jam UTC saat ini diandaikan **06:56**. Sesuaikan dengan jam pada node kalian.
 
-<!-- SS-14: Screenshot keluaran date -u pada Firewall. -->
-![Jam UTC](img/14-date-utc.png)
+![Jam UTC](img/13-date-utc.png)
 
 ## 7.2 Bukti: Rentang yang Mencakup Jam Sekarang
 
@@ -658,8 +676,7 @@ ping -c 2 -W 2 10.50.2.2
 
 Hasil yang diharapkan: **gagal**. Pada `Firewall`, `iptables -L FORWARD -n -v` menunjukkan counter rule bertambah, dan kolom keterangan menampilkan rentang waktu dengan akhiran `UTC`.
 
-<!-- SS-15: Screenshot rule time pada iptables -L FORWARD -n -v (ada tulisan TIME from ... to ... UTC) dan ping dari Mariejois ke Arabasta yang gagal. -->
-![Skenario 2 diblokir](img/15-skenario2-blokir.png)
+![Skenario 2 diblokir](img/14-skenario2-blokir.png)
 
 ## 7.3 Bukti: Rentang yang Tidak Mencakup Jam Sekarang
 
@@ -678,8 +695,7 @@ ping -c 2 -W 2 10.50.2.2
 
 Hasil yang diharapkan: **berhasil**, karena jam sekarang berada di luar rentang.
 
-<!-- SS-16: Screenshot ping dari Mariejois ke Arabasta berhasil saat rentang waktu tidak mencakup jam sekarang. -->
-![Skenario 2 diizinkan](img/16-skenario2-izin.png)
+![Skenario 2 diizinkan](img/15-skenario2-izin.png)
 
 ## 7.4 Rule Sesuai Kebutuhan
 
@@ -753,10 +769,7 @@ cat /tmp/p8080.txt
 
 Hasil yang diharapkan: `p80.txt` berisi `halo-80` dan `p8080.txt` berisi `halo-8080`. Kedua port masih terbuka. Listener berhenti sendiri setelah satu koneksi selesai.
 
-<!-- UJI: sintaks nc -l -p dengan netcat-traditional di Water7 dan nc client busybox di Mariejois; cek apakah exit status 0 saat berhasil. Jika busybox nc tidak keluar sendiri setelah EOF, tambahkan -w 1. -->
-
-<!-- SS-17: Screenshot pengujian sebelum rule: isi p80.txt dan p8080.txt pada Water7 (keduanya berisi pesan). -->
-![Listener sebelum rule](img/17-skenario3-sebelum.png)
+![Listener sebelum rule](img/16-skenario3-sebelum.png)
 
 ## 8.2 Pasang Rule DROP
 
@@ -790,8 +803,7 @@ Hasil yang diharapkan:
 
 Port 80 tidak pernah menjawab, dan pengirim menunggu sampai timeout. Itulah ciri khas `DROP`.
 
-<!-- SS-18: Screenshot dari Mariejois: nc ke port 80 menggantung lalu gagal, nc ke port 8080 berhasil; serta cat /tmp/p80.txt (kosong) dan /tmp/p8080.txt (berisi) pada Water7. -->
-![Skenario 3 DROP](img/18-skenario3-drop.png)
+![Skenario 3 DROP](img/17-skenario3-drop.png)
 
 Lihat counter pada `Water7`:
 
@@ -825,8 +837,7 @@ echo "halo-80" | nc -w 3 10.50.3.2 80; echo "exit=$?"
 
 Hasil yang diharapkan: perintah **langsung selesai** dengan pesan penolakan (`Connection refused` atau sejenisnya) dan `exit` bukan 0, tanpa menunggu 3 detik.
 
-<!-- SS-19: Screenshot nc ke port 80 saat rule REJECT: langsung gagal tanpa menggantung. -->
-![Skenario 3 REJECT](img/19-skenario3-reject.png)
+![Skenario 3 REJECT](img/18-skenario3-reject.png)
 
 | | `DROP` | `REJECT` |
 |---|---|---|
@@ -856,8 +867,7 @@ cat /tmp/dump80.txt
 
 Hasil yang diharapkan: pada kondisi `DROP`, hanya terlihat paket `SYN` yang datang (beberapa kali, karena dikirim ulang) tanpa jawaban. Pada kondisi `REJECT`, terlihat `SYN` yang segera dijawab paket `RST`. `tcpdump` menangkap paket sebelum diproses firewall, sehingga paket yang akhirnya dibuang pun tetap terlihat masuk.
 
-<!-- SS-20: (opsional) Screenshot isi dump80.txt pada kondisi DROP (SYN berulang tanpa balasan) dan kondisi REJECT (SYN lalu RST). -->
-![tcpdump DROP dan REJECT](img/20-skenario3-tcpdump.png)
+![tcpdump DROP dan REJECT](img/19-skenario3-tcpdump.png)
 
 ## 8.5 Bersihkan
 
@@ -903,8 +913,7 @@ cat /tmp/mariejois.txt
 
 Hasil yang diharapkan: `baratie.txt` berisi `sebelum-dnat`, sedangkan `mariejois.txt` kosong. Pesan sampai ke tujuan yang benar.
 
-<!-- SS-21: Screenshot sebelum DNAT: pesan dikirim dari Water7, isi baratie.txt terisi dan mariejois.txt kosong. -->
-![Sebelum DNAT](img/21-skenario4-sebelum.png)
+![Sebelum DNAT](img/20-skenario4-sebelum.png)
 
 ## 9.2 Pasang Rule DNAT
 
@@ -934,8 +943,7 @@ Periksa table `nat`:
 iptables -t nat -L PREROUTING -n -v --line-numbers
 ```
 
-<!-- SS-22: Screenshot iptables -t nat -L PREROUTING -n -v --line-numbers setelah rule DNAT dipasang. -->
-![Rule DNAT](img/22-skenario4-rule.png)
+![Rule DNAT](img/21-skenario4-rule.png)
 
 ## 9.3 Uji Setelah DNAT
 
@@ -954,8 +962,7 @@ cat /tmp/mariejois.txt
 
 Hasil yang diharapkan: kali ini `mariejois.txt` berisi `sesudah-dnat`, sedangkan `baratie.txt` **kosong**. Pengirim tetap mengetik alamat `Baratie`, tetapi paketnya tiba di `Mariejois`.
 
-<!-- SS-23: Screenshot sesudah DNAT: baratie.txt kosong dan mariejois.txt berisi pesan. -->
-![Sesudah DNAT](img/23-skenario4-sesudah.png)
+![Sesudah DNAT](img/22-skenario4-sesudah.png)
 
 ## 9.4 Buktikan dengan tcpdump dan conntrack
 
@@ -996,9 +1003,7 @@ tcp  6 117 TIME_WAIT src=10.50.3.2 dst=10.50.1.2 sport=52922 dport=9000 src=10.5
 
 Kelompok pertama adalah arah permintaan (`dst=10.50.1.2`, alamat Baratie yang diketik penguji). Kelompok kedua adalah arah balasan (`src=10.50.1.3`, alamat Mariejois yang sebenarnya membalas). Selisih antara kedua kelompok itulah hasil DNAT.
 
-<!-- UJI: jika conntrack -L tidak menampilkan apa-apa atau tidak tersedia, gunakan: cat /proc/net/nf_conntrack | grep 9000 -->
-<!-- SS-24: Screenshot isi icmp.txt pada Mariejois (tujuan 10.50.1.3) dan keluaran conntrack -L | grep 9000 pada Firewall. -->
-![Bukti DNAT](img/24-skenario4-bukti.png)
+![Bukti DNAT](img/23-skenario4-bukti.png)
 
 ## 9.5 Catatan
 
@@ -1061,8 +1066,7 @@ iptables -L FORWARD -n -v --line-numbers
 
 Baris pertama judul chain menampilkan `policy DROP` beserta jumlah paket yang dibuang karena tidak cocok dengan rule mana pun. Angka itu bertambah setiap ping.
 
-<!-- SS-25: Screenshot ping dari Baratie ke 8.8.8.8 yang gagal, dan iptables -L FORWARD -n -v dengan policy DROP serta counter policy yang bertambah. -->
-![Policy DROP tanpa balasan](img/25-policy-drop-gagal.png)
+![Policy DROP tanpa balasan](img/24-policy-drop-gagal.png)
 
 ## 10.2 Tambahkan Rule Stateful
 
@@ -1098,8 +1102,7 @@ Jalankan kedua perintah itu dari `Mariejois`, lalu jalankan `ping -c 2 -W 2 8.8.
 
 Hal yang berubah dari 10.1 hanya satu rule. Perhatikan bahwa koneksi yang dimulai dari internet menuju LAN tetap tertolak, karena paket pertamanya berstatus `NEW` dan tidak ada rule yang mengizinkannya.
 
-<!-- SS-26: Screenshot ping dari Baratie ke 8.8.8.8 berhasil setelah rule ESTABLISHED,RELATED ditambahkan, dan ping Water7 ke 8.8.8.8 yang gagal. -->
-![Rule stateful](img/26-stateful-berhasil.png)
+![Rule stateful](img/25-stateful-berhasil.png)
 
 ## 10.3 Izinkan Satu Layanan Tertentu
 
@@ -1140,8 +1143,7 @@ num   pkts bytes target     prot opt in     out     source       destination
 3        .     . ACCEPT     6    --  eth1   eth3    0.0.0.0/0    0.0.0.0/0     tcp dpt:8080
 ```
 
-<!-- SS-27: Screenshot iptables -L FORWARD -n -v --line-numbers berisi tiga rule beserta counter, serta nc ke port 8080 berhasil dan ping ke Water7 gagal. -->
-![Default deny lengkap](img/27-default-deny.png)
+![Default deny lengkap](img/26-default-deny.png)
 
 ## 10.4 Kembalikan ke Kondisi Awal
 
@@ -1152,253 +1154,3 @@ pkill nc
 ```
 
 Policy dikembalikan **sebelum** rule dihapus, agar tidak ada saat di mana semua lalu lintas terblokir.
-
----
-
-# 11. Persistensi
-
-Rule iptables hanya hidup di memori. Begitu node `Firewall` atau `Water7` di-stop lalu di-start, seluruh rule hilang dan jaringan kembali "terbuka". Konfigurasi dianggap selesai apabila rule tetap ada setelah node direstart.
-
-Pada node GNS3, hanya `/etc/network/interfaces` dan folder `/root` yang bertahan setelah restart. Karena itu rule disimpan ke file di `/root`, lalu dimuat kembali lewat baris `up` pada `/etc/network/interfaces`.
-
-## 11.1 Firewall
-
-Susun rule akhir yang menggabungkan skenario 1, 2, dan 4 beserta NAT:
-
-```bash
-iptables -F
-iptables -t nat -F
-iptables -P INPUT ACCEPT
-iptables -P FORWARD ACCEPT
-iptables -P OUTPUT ACCEPT
-iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-iptables -A FORWARD -s 10.50.1.2 -d 10.50.3.2 -j DROP
-iptables -A FORWARD -d 10.50.2.2 -m time --timestart 00:00 --timestop 10:00 -j DROP
-iptables -t nat -A PREROUTING -d 10.50.1.2 -j DNAT --to-destination 10.50.1.3
-```
-
-Simpan ke file:
-
-```bash
-iptables-save > /root/firewall.rules
-cat /root/firewall.rules
-```
-
-Buat skrip yang dijalankan saat interface menyala:
-
-```bash
-cat > /root/firewall.sh <<'EOF'
-#!/bin/sh
-sysctl -w net.ipv4.ip_forward=1
-iptables-restore < /root/firewall.rules
-EOF
-chmod +x /root/firewall.sh
-```
-
-Panggil skrip tersebut dari `eth0`. Tulis ulang konfigurasi interface secara lengkap:
-
-```bash
-cat > /etc/network/interfaces <<'EOF'
-auto lo
-iface lo inet loopback
-
-auto eth0
-iface eth0 inet dhcp
-    up /root/firewall.sh
-
-auto eth1
-iface eth1 inet static
-    address 10.50.1.1
-    netmask 255.255.255.0
-
-auto eth2
-iface eth2 inet static
-    address 10.50.2.1
-    netmask 255.255.255.0
-
-auto eth3
-iface eth3 inet static
-    address 10.50.3.1
-    netmask 255.255.255.0
-EOF
-```
-
-`iptables-restore` **mengganti** seluruh rule yang aktif dengan isi file, sehingga skrip ini aman dijalankan berulang kali tanpa menghasilkan rule ganda. Sebaliknya, menaruh perintah `iptables -A ...` langsung pada baris `up` akan menambah rule baru setiap kali interface dinyalakan ulang.
-
-<!-- UJI: pastikan baris "up /root/firewall.sh" dieksekusi saat node distart (cek iptables -S setelah restart). Jika tidak, alternatifnya memasukkan source /root/firewall.sh ke /root/.bashrc (seperti skrip pada Modul 3 Reverse Proxy). -->
-<!-- SS-28: Screenshot isi /root/firewall.rules dan /etc/network/interfaces pada Firewall. -->
-![File persistensi Firewall](img/28-persistensi-firewall.png)
-
-## 11.2 Water7
-
-Pada `Water7`, simpan rule dari skenario 3:
-
-```bash
-iptables -F
-iptables -A INPUT -p tcp --dport 80 -j DROP
-iptables-save > /root/firewall.rules
-```
-
-Buat skrip pemuatnya:
-
-```bash
-cat > /root/firewall.sh <<'EOF'
-#!/bin/sh
-iptables-restore < /root/firewall.rules
-EOF
-chmod +x /root/firewall.sh
-```
-
-Lalu tulis ulang konfigurasi interface:
-
-```bash
-cat > /etc/network/interfaces <<'EOF'
-auto lo
-iface lo inet loopback
-
-auto eth0
-iface eth0 inet static
-    address 10.50.3.2
-    netmask 255.255.255.0
-    gateway 10.50.3.1
-    up /root/firewall.sh
-EOF
-```
-
-## 11.3 Restart Node
-
-Hentikan lalu nyalakan kembali node `Firewall` dan `Water7` dari GNS3 (klik kanan, **Stop**, lalu **Start**).
-
-Setelah `Firewall` aktif kembali, periksa:
-
-```bash
-sysctl net.ipv4.ip_forward
-iptables -S
-iptables -t nat -S
-```
-
-Hasil yang diharapkan: `ip_forward = 1`, rule `FORWARD` untuk Baratie dan Arabasta ada, serta rule `DNAT` dan `MASQUERADE` ada pada table `nat`.
-
-Setelah `Water7` aktif kembali:
-
-```bash
-iptables -S INPUT
-```
-
-Hasil yang diharapkan: rule `DROP` untuk TCP port 80 ada.
-
-> `/etc/resolv.conf` tidak ikut bertahan setelah restart. Jika `apt` perlu dipakai lagi, isi ulang dengan `echo "nameserver 8.8.8.8" > /etc/resolv.conf`.
-
-<!-- SS-29: Screenshot iptables -S dan iptables -t nat -S pada Firewall setelah node direstart (rule masih ada). -->
-![Firewall setelah restart](img/29-firewall-restart.png)
-
-<!-- SS-30: Screenshot iptables -S INPUT pada Water7 setelah node direstart (rule masih ada). -->
-![Water7 setelah restart](img/30-water7-restart.png)
-
----
-
-# 12. Troubleshooting
-
-| Gejala | Kemungkinan penyebab | Pemeriksaan atau perbaikan |
-|---|---|---|
-| Ping dari host ke gateway gagal | IP atau gateway salah, kabel tertukar | `ip -br a` dan `ip route` pada host; cocokkan dengan tabel pada bagian 1.2 dan 1.3 |
-| Ping antar-LAN gagal sebelum firewall dipasang | IP forwarding belum aktif | `sysctl net.ipv4.ip_forward` pada `Firewall` harus bernilai 1 |
-| Ping ke `8.8.8.8` gagal dari host | `MASQUERADE` belum dipasang, atau `eth0` belum mendapat IP dari NAT | `iptables -t nat -S` dan `ip -br a` pada `Firewall` |
-| `apt update` gagal pada `Water7` | `/etc/resolv.conf` kosong, atau policy `FORWARD` sudah `DROP` | Isi ulang `nameserver`; kembalikan policy ke `ACCEPT` |
-| `iptables: command not found` | Package belum dipasang | `apt update && apt install -y iptables` |
-| `Failed to initialize nft` atau `Protocol not supported` | iptables berbasis nftables tidak cocok dengan kernel host | `update-alternatives --set iptables /usr/sbin/iptables-legacy` |
-| `nc: command not found` atau `nc -l -p` menghasilkan error | Varian `nc` berbeda | `nc -h`; pada `Water7` pasang `netcat-traditional` (bagian 3.4) |
-| Rule sudah dipasang tetapi tidak berpengaruh | Chain salah (`INPUT` padahal paket hanya lewat), atau ada rule lain yang lebih dulu cocok | Ulangi bagian 5; periksa urutan dengan `iptables -L --line-numbers` |
-| Counter rule tidak bertambah | Paket tidak melewati rule itu | Periksa routing; cek counter rule lain |
-| Rule `time` tidak sesuai jam | Jam dibaca dalam UTC | `date -u`, dan kurangi 7 jam dari WIB |
-| `Index of insertion too big` | Nomor pada `-I` melebihi jumlah rule ditambah satu | Pakai `-A` atau nomor yang lebih kecil |
-| Rule tertumpuk ganda | Rule dipasang berulang tanpa dihapus | `iptables -S`; hapus dengan `-D` atau bersihkan dengan `-F` |
-| DNAT tidak bekerja | Penguji berada di LAN yang sama dengan `Baratie`, sehingga paket tidak lewat router | Uji dari `Water7` atau `Arabasta` |
-| Semua koneksi mati setelah `-P FORWARD DROP` | Rule `ESTABLISHED,RELATED` belum dipasang | Kembalikan: `iptables -P FORWARD ACCEPT`, lalu ulangi bagian 10 |
-| Rule hilang setelah restart | Belum disimpan, atau baris `up` tidak berjalan | Ulangi bagian 11; periksa isi `/etc/network/interfaces` |
-| `ifup` atau `ifdown` tidak tersedia | Image tidak memuatnya | Atur IP sementara dengan `ip addr add 10.50.1.1/24 dev eth1` dan `ip link set eth1 up` |
-
-Urutan pemeriksaan yang disarankan ketika sebuah skenario tidak berjalan:
-
-```text
-Interface dan IP
-      |
-      v
-Gateway dan routing
-      |
-      v
-IP forwarding
-      |
-      v
-Rule iptables (chain, urutan, policy)
-      |
-      v
-Counter
-```
-
----
-
-# 13. Final Verification dan Reset
-
-## 13.1 Verifikasi Akhir
-
-Setelah bagian 11 selesai dan node direstart, jalankan pemeriksaan berikut.
-
-### `Firewall`
-
-```bash
-ip -br a
-sysctl net.ipv4.ip_forward
-iptables -S
-iptables -t nat -S
-```
-
-### `Water7`
-
-```bash
-ip -br a
-iptables -S INPUT
-```
-
-### Pengujian Fungsional
-
-| Pengujian | Perintah | Hasil yang diharapkan |
-|---|---|---|
-| Skenario 1 | `Baratie`: `ping -c 2 -W 2 10.50.3.2` | Gagal |
-| Kontrol skenario 1 | `Mariejois`: `ping -c 2 -W 2 10.50.3.2` | Berhasil |
-| Skenario 2 | `Mariejois`: `ping -c 2 -W 2 10.50.2.2` | Gagal pada 07.00 sampai 17.00 WIB, berhasil di luar jam itu |
-| Skenario 3, port 80 | `Mariejois`: `echo x \| nc -w 3 10.50.3.2 80` | Menggantung lalu gagal |
-| Skenario 3, port 8080 | `Mariejois`: `echo x \| nc -w 3 10.50.3.2 8080` (listener aktif) | Berhasil |
-| Skenario 4 | `Water7`: `echo x \| nc -w 3 10.50.1.2 9000` (listener aktif di Baratie dan Mariejois) | Diterima `Mariejois`, bukan `Baratie` |
-| NAT | `Baratie`: `ping -c 2 -W 2 8.8.8.8` | Berhasil |
-
-<!-- SS-31: Screenshot ringkasan pengujian akhir (beberapa ping/nc dari Baratie, Mariejois, dan Water7 setelah node direstart). -->
-![Pengujian akhir](img/31-final-verification.png)
-
-## 13.2 Reset ke Kondisi Awal
-
-Untuk mengulang dari awal, hapus seluruh rule pada `Firewall` dan pasang kembali NAT:
-
-```bash
-iptables -P INPUT ACCEPT
-iptables -P FORWARD ACCEPT
-iptables -P OUTPUT ACCEPT
-iptables -F
-iptables -t nat -F
-iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-```
-
-Pada `Water7`:
-
-```bash
-iptables -P INPUT ACCEPT
-iptables -F
-```
-
-Perintah di atas hanya menghapus rule yang sedang aktif. Rule pada file `/root/firewall.rules` akan dimuat kembali saat node distart ulang. Untuk membuang rule yang tersimpan, simpan kondisi kosong setelah reset:
-
-```bash
-iptables-save > /root/firewall.rules
-```
-
-Dengan begitu, restart berikutnya tidak lagi memuat rule lama. Pada `Firewall`, jalankan perintah ini setelah `MASQUERADE` dipasang kembali, supaya NAT tetap ikut tersimpan.
